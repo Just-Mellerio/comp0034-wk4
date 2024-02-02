@@ -1,4 +1,7 @@
-from flask import current_app as app, request, make_response
+from flask import current_app as app, request, make_response, abort, jsonify
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.exc import NoResultFound
+from marshmallow.exceptions import ValidationError
 from paralympics import db
 from paralympics.models import Region, Event
 from paralympics.schemas import RegionSchema, EventSchema
@@ -9,35 +12,39 @@ region_schema = RegionSchema()
 events_schema = EventSchema(many=True)
 event_schema = EventSchema()
 
+@app.errorhandler(404)
+def resource_not_found(e):
+    return jsonify(error=str(e)), 404
+
 
 @app.get("/regions")
 def get_regions():
-    """Returns a list of NOC region codes and their details in JSON.
-
-    :returns: JSON
-    """
-    # Select all the regions using Flask-SQLAlchemy
     all_regions = db.session.execute(db.select(Region)).scalars()
-    # Dump the data using the Marshmallow regions schema; '.dump()' returns JSON.
     result = regions_schema.dump(all_regions)
-    # Return the data in the HTTP response
     return result
-
 
 @app.get('/regions/<code>')
 def get_region(code):
-    """ Returns one region in JSON.
+    try:
+        region = db.session.execute(db.select(Region).filter_by(NOC=code)).scalar_one()
+        result = region_schema.dump(region)
+        return result
+    except NoResultFound:
+        abort(404, description="Region not found.")
+        
 
-    :param code: The NOC code of the region to return
-    :param type code: str
-    :returns: JSON
+
+@app.errorhandler(ValidationError)
+def handle_validation_error(error):
+    """ Error handler for marshmallow schema validation errors.
+    Args:
+        error (ValidationError): Marshmallow error.
+    Returns:
+        HTTP response with the validation error message and the 400 status code
     """
-    # Query structure shown at https://flask-sqlalchemy.palletsprojects.com/en/3.1.x/queries/#select
-    region = db.session.execute(db.select(Region).filter_by(NOC=code)).scalar_one()
-    # Dump the data using the Marshmallow region schema; '.dump()' returns JSON.
-    result = region_schema.dump(region)
-    # Return the data in the HTTP response
-    return result
+    return jsonify(error.messages), 400
+
+
 
 
 @app.get("/events")
@@ -66,32 +73,35 @@ def get_event(event_id):
 @app.post('/events')
 def add_event():
     """ Adds a new event.
-
-   Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
-   event_schema.loads()
-
-   :returns: JSON
-   """
+    Gets the JSON data from the request body and uses this to deserialize JSON to an object using Marshmallow
+    event_schema.loads()
+    :returns: JSON
+    """
     ev_json = request.get_json()
-    event = event_schema.load(ev_json)
-    db.session.add(event)
-    db.session.commit()
-    return {"message": f"Event added with id= {event.id}"}
+    try:
+        event = event_schema.load(ev_json)
+        db.session.add(event)
+        db.session.commit()
+        return jsonify({"message": f"Event added with id= {event.id}"}), 201
+    except ValidationError as err:
+        return handle_validation_error(err)
 
 
 @app.post('/regions')
 def add_region():
     """ Adds a new region.
-
-    Gets the JSON data from the request body and uses this to deserialise JSON to an object using Marshmallow
-   region_schema.loads()
-
+    Gets the JSON data from the request body and uses this to deserialize JSON to an object using Marshmallow
+    region_schema.loads()
     :returns: JSON"""
     json_data = request.get_json()
-    region = region_schema.load(json_data)
-    db.session.add(region)
-    db.session.commit()
-    return {"message": f"Region added with NOC= {region.NOC}"}
+    try:
+        region = region_schema.load(json_data)
+        db.session.add(region)
+        db.session.commit()
+        return jsonify({"message": f"Region added with NOC= {region.NOC}"}), 201
+    except ValidationError as err:
+        return handle_validation_error(err)
+
 
 
 @app.delete('/events/<int:event_id>')
